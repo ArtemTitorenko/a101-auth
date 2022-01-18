@@ -1,0 +1,58 @@
+version: "3.7"
+
+services:
+  nginx:
+    build:
+      context: ./nginx
+    ports:
+      - 80:80
+      - 443:443
+    environment:
+      - TLS_MODE
+      - SITE_HOST
+
+  db:
+    image: postgres:14-alpine
+    volumes:
+    - ./postgres_data:/var/lib/postgresql/data:cached
+    ports:
+    - 15432:5432
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+
+  redis:
+    image: redis:5.0.3-alpine
+
+  backend:
+    build:
+      context: ./backend
+    command: uvicorn main:app --reload --host 0.0.0.0
+    entrypoint: wait-for db:5432 -- ./entrypoint.sh
+    restart: unless-stopped
+    ports:
+    - 8000:8000
+    volumes:
+    - ./backend:/app
+    depends_on:
+      - db
+      - redis
+    env_file:
+      - .env
+
+  celery:
+    build:
+      context: ./backend
+    command: celery -A celery_app worker -l info
+    env_file:
+      - .env
+
+  flower:
+    build:
+      context: ./flower
+    command: flower --address=0.0.0.0 --port=5555 --url_prefix=flower --persistent=True
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - FLOWER_PORT=5555
+      - FLOWER_BASIC_AUTH
+    depends_on:
+      - celery

@@ -1,0 +1,90 @@
+image: tiangolo/docker-with-compose
+
+variables:
+  DOCKER_DRIVE: overlay2
+  CI_REGISTRY_BACKEND: $CI_REGISTRY_IMAGE/backend
+  CI_REGISTRY_NGINX: $CI_REGISTRY_IMAGE/nginx
+  CI_REGISTRY_FRONTEND: $CI_REGISTRY_IMAGE/frontend
+
+services:
+  - docker:20.10.7-dind
+
+.before_script_docker_login: &before_script_docker_login
+  echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
+
+.before_script_configure_ssh: &before_script_configure_ssh |
+  which ssh-agent || ( apk --update add openssh-client )
+  eval $(ssh-agent -s)
+  echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add - > /dev/null
+  mkdir -p ~/.ssh
+  chmod 700 ~/.ssh
+  ssh-keyscan "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+  chmod 644 ~/.ssh/known_hosts
+  [[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+
+before_script:
+  - *before_script_docker_login
+
+stages:
+  - build
+  - test
+  - deploy
+
+build-all:
+ stage: build
+ only:
+  - master
+  - develop
+  - merge_request
+ script:
+  - docker pull $CI_REGISTRY_FRONTEND:$CI_COMMIT_REF_NAME || true
+  - >
+     docker build
+     --pull
+     --tag $CI_REGISTRY_FRONTEND:$CI_COMMIT_REF_NAME
+     --cache-from $CI_REGISTRY_FRONTEND:$CI_COMMIT_REF_NAME
+     ./frontend
+  - docker push $CI_REGISTRY_FRONTEND:$CI_COMMIT_REF_NAME
+  - docker pull $CI_REGISTRY_BACKEND:$CI_COMMIT_REF_NAME || true
+  - >
+    docker build
+    --pull
+    --tag $CI_REGISTRY_BACKEND:$CI_COMMIT_REF_NAME
+    --cache-from $CI_REGISTRY_BACKEND:$CI_COMMIT_REF_NAME
+    ./backend
+  - docker push $CI_REGISTRY_BACKEND:$CI_COMMIT_REF_NAME
+  - docker pull $CI_REGISTRY_NGINX:$CI_COMMIT_REF_NAME || true
+  - >
+    docker build
+    --pull
+    --tag $CI_REGISTRY_NGINX:$CI_COMMIT_REF_NAME
+    --cache-from $CI_REGISTRY_NGINX:$CI_COMMIT_REF_NAME
+    ./nginx
+  - docker push $CI_REGISTRY_NGINX:$CI_COMMIT_REF_NAME
+
+# test-backend:
+#  stage: test
+#  only:
+#   refs:
+#     - master
+#  script:
+#    - IMAGE_TAG=$CI_COMMIT_REF_NAME docker-compose -f docker-compose.test.yml pull backend
+#    - >
+#      IMAGE_TAG=$CI_COMMIT_REF_NAME docker-compose -f docker-compose.test.yml run --rm backend /bin/sh -c "pytest"
+
+
+deploy-all:
+  environment:
+    name: $CI_COMMIT_REF_NAME
+  stage: deploy
+  variables:
+    DOCKER_HOST: ssh://$DEPLOY_USER@$DEPLOY_HOST
+  before_script:
+    - *before_script_configure_ssh
+    - *before_script_docker_login
+  only:
+    - master
+    - develop
+  script:
+    - IMAGE_TAG=$CI_COMMIT_REF_NAME docker stack deploy --compose-file production.yml --with-registry-auth --resolve-image=always media-planner
+    - sleep 30 # Кластер должен успеть обновиться прежде чем протухнет token registry

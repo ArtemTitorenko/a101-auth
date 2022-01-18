@@ -1,0 +1,58 @@
+resolver 127.0.0.11 ipv6=off;
+
+map $server_port $x_forwarded_host {
+    default $host:$server_port;
+    80      $host;
+    443     $host;
+}
+
+<% if [ "$TLS_MODE" != "off" ]; then -%>
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name <%= $SITE_HOST %> www.<%= $SITE_HOST %>;
+
+        if ($host = <%= $SITE_HOST %>) {
+            return 301 https://$host$request_uri;
+        }
+
+        return 404;
+}
+<% fi; -%>
+
+server {
+    server_name <%= $SITE_HOST %>;
+
+    <% if [ "$TLS_MODE" != "off" ]; then -%>
+    listen 443 ssl http2;
+    ssl_certificate_key /etc/nginx/certs/media-planner/key.pem;
+    ssl_certificate /etc/nginx/certs/media-planner/cert.pem;
+    <% else -%>
+        listen 80;
+        listen [::]:80;
+   <% fi -%>
+
+   location /robots.txt {
+        alias /var/www/files/robots.txt;
+    }
+
+    location ^~ /.well-known/acme-challenge/ {
+        default_type "text/plain";
+        root /etc/nginx/files;
+        allow all;
+    }
+
+    location ~ ^/(api|docs|redoc|openapi.json)+ {
+        include backend;
+    }
+
+    location / {
+        include backend;
+    }
+
+    location /flower/ {
+        proxy_pass http://flower:5555;
+    }
+
+}

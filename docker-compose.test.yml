@@ -1,0 +1,14 @@
+version: "3.7"
+
+services:
+  db:
+    image: postgres:12-alpine
+    environment:
+      - POSTGRES_PASSWORD=postgres
+
+  backend:
+    restart: "no"
+    image: ${CI_REGISTRY_BACKEND}:${IMAGE_TAG}
+    entrypoint: wait-for db:5432 -- ./entrypoint.sh
+    depends_on:
+      - db

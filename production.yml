@@ -1,0 +1,132 @@
+version: "3.7"
+
+
+x-backend_env: &backend_env
+  environment:
+    - POSTGRES_PASSWORD
+    - POSTGRES_HOST
+    - POSTGRES_PORT
+    - POSTGRES_USER
+    - EMAIL_HOST
+    - EMAIL_HOST_PASSWORD
+    - EMAIL_HOST_USER
+    - EMAIL_PORT
+    - EMAIL_USE_SSL
+    - SERVER_EMAIL
+    - SITE_HOST
+    - DATABASE_URL
+
+
+services:
+  db:
+    image: postgres:12-alpine
+    volumes:
+    - postgres_data:/var/lib/postgresql/data
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [ node.role == manager ]
+      restart_policy:
+        condition: on-failure
+    ports:
+    - 15432:5432
+    environment:
+      - POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  redis:
+    image: redis:5.0.3-alpine
+    volumes:
+    - redisdata:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  backend:
+    image: ${CI_REGISTRY_BACKEND}:${IMAGE_TAG}
+    command: gunicorn main:app -b 0.0.0.0:8000 -w 8 -k uvicorn.workers.UvicornWorker --access-logfile - --error-logfile -
+    entrypoint: wait-for db:5432 -- ./entrypoint.sh
+    <<: *backend_env
+    deploy:
+      restart_policy:
+        condition: on-failure
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  celery:
+    image: ${CI_REGISTRY_BACKEND}:${IMAGE_TAG}
+    command: celery -A celery_app worker -l info
+    <<: *backend_env
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  celery-beat:
+    command: celery -A celery_app beat -l info
+    image: ${CI_REGISTRY_BACKEND}:${IMAGE_TAG}
+    <<: *backend_env
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  frontend:
+    image: ${CI_REGISTRY_FRONTEND}:${IMAGE_TAG}
+    command: npm run start
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [ node.role == manager ]
+      restart_policy:
+        condition: on-failure
+    environment:
+      - NODE_OPTIONS="--max-old-space-size=8192"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  nginx:
+    image: ${CI_REGISTRY_NGINX}:${IMAGE_TAG}
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [ node.role == manager ]
+      restart_policy:
+        condition: on-failure
+    restart: on-failure
+    ports:
+      - 80:80
+      - 443:443
+    environment:
+      - TLS_MODE
+      - SITE_HOST
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "1"
+    volumes:
+    - acme.sh:/acme.sh:delegated
+    - nginx_files:/etc/nginx/files
+    - nginx_certs:/etc/nginx/certs
+
+volumes:
+  acme.sh:
+  postgres_data:
+  nginx_files:
+  nginx_certs:
+  redisdata:
